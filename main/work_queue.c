@@ -1,82 +1,76 @@
 #include "work_queue.h"
 #include "esp_log.h"
+#include "mining.h"
+#include "stratum_api.h"
+#include <stdlib.h>
 
-void queue_init(work_queue *queue)
-{
-    queue->head = 0;
-    queue->tail = 0;
-    queue->count = 0;
-    pthread_mutex_init(&queue->lock, NULL);
-    pthread_cond_init(&queue->not_empty, NULL);
-    pthread_cond_init(&queue->not_full, NULL);
+static const char * TAG = "work_queue";
+
+void queue_init(work_queue *q) {
+    q->head = 0;
+    q->tail = 0;
+    q->count = 0;
+    pthread_mutex_init(&q->lock, NULL);
 }
 
-void queue_enqueue(work_queue *queue, void *new_work)
-{
-    pthread_mutex_lock(&queue->lock);
-
-    while (queue->count == QUEUE_SIZE)
-    {
-        pthread_cond_wait(&queue->not_full, &queue->lock);
+int queue_enqueue(work_queue *q, void * item) {
+    pthread_mutex_lock(&q->lock);
+    if (q->count >= QUEUE_SIZE) {
+        pthread_mutex_unlock(&q->lock);
+        return -1; 
     }
-
-    queue->buffer[queue->tail] = new_work;
-    queue->tail = (queue->tail + 1) % QUEUE_SIZE;
-    queue->count++;
-
-    pthread_cond_signal(&queue->not_empty);
-    pthread_mutex_unlock(&queue->lock);
+    q->buffer[q->tail] = item;
+    q->tail = (q->tail + 1) % QUEUE_SIZE;
+    q->count++;
+    pthread_mutex_unlock(&q->lock);
+    return 0; 
 }
 
-void *queue_dequeue(work_queue *queue)
-{
-    pthread_mutex_lock(&queue->lock);
-
-    while (queue->count == 0)
-    {
-        pthread_cond_wait(&queue->not_empty, &queue->lock);
+void * queue_dequeue(work_queue *q) {
+    pthread_mutex_lock(&q->lock);
+    if (q->count == 0) {
+        pthread_mutex_unlock(&q->lock);
+        return NULL;
     }
-
-    void *next_work = queue->buffer[queue->head];
-    queue->head = (queue->head + 1) % QUEUE_SIZE;
-    queue->count--;
-
-    pthread_cond_signal(&queue->not_full);
-    pthread_mutex_unlock(&queue->lock);
-
-    return next_work;
+    void * item = q->buffer[q->head];
+    q->buffer[q->head] = NULL;
+    q->head = (q->head + 1) % QUEUE_SIZE;
+    q->count--;
+    pthread_mutex_unlock(&q->lock);
+    return item;
 }
 
-void queue_clear(work_queue *queue)
-{
-    pthread_mutex_lock(&queue->lock);
+void queue_clear(work_queue *q) {
+    pthread_mutex_lock(&q->lock);
 
-    while (queue->count > 0)
-    {
-        mining_notify *next_work = queue->buffer[queue->head];
-        STRATUM_V1_free_mining_notify(next_work);
-        queue->head = (queue->head + 1) % QUEUE_SIZE;
-        queue->count--;
+    while (q->count > 0) {
+        mining_notify * item = (mining_notify *) q->buffer[q->head];
+        if (item != NULL) {
+            STRATUM_V1_free_mining_notify(item);
+        }
+        q->buffer[q->head] = NULL;
+        q->head = (q->head + 1) % QUEUE_SIZE;
+        q->count--;
     }
 
-    pthread_cond_signal(&queue->not_full);
-    pthread_mutex_unlock(&queue->lock);
+    q->head = 0;
+    q->tail = 0;
+    q->count = 0;
+    pthread_mutex_unlock(&q->lock);
 }
 
-void ASIC_jobs_queue_clear(work_queue *queue)
-{
-    pthread_mutex_lock(&queue->lock);
-
-    while (queue->count > 0)
-    {
-        bm_job *next_work = queue->buffer[queue->head];
-        free(next_work->jobid);
-        free(next_work->extranonce2);
-        free(next_work);
-        queue->head = (queue->head + 1) % QUEUE_SIZE;
-        queue->count--;
+void ASIC_jobs_queue_clear(work_queue *q) {
+    while (q->count > 0) {
+        bm_job * item = (bm_job *) q->buffer[q->head];
+        if (item != NULL) {
+            free_bm_job(item);
+        }
+        q->buffer[q->head] = NULL;
+        q->head = (q->head + 1) % QUEUE_SIZE;
+        q->count--;
     }
 
-    pthread_cond_signal(&queue->not_full);
-    pthread_mutex_unlock(&queue->lock);
+    q->head = 0;
+    q->tail = 0;
+    q->count = 0;
 }
