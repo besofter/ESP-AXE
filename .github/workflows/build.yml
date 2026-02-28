@@ -39,7 +39,9 @@ jobs:
         cache: 'pip'
     - run: pip install esptool
     - name: "Create factory/merged image"
-      run: "./merge_bin.sh ./esp-miner-merged.bin"
+      run: |
+        chmod +x ./merge_bin.sh
+        ./merge_bin.sh ./esp-miner-merged.bin
     - name: upload esp-miner-merged.bin
       uses: actions/upload-artifact@v4
       with:
