@@ -41,16 +41,6 @@ typedef enum
     ASIC_BM1370,
 } AsicModel;
 
-// typedef struct
-// {
-//     uint8_t (*init_fn)(uint64_t, uint16_t);
-//     task_result * (*receive_result_fn)(void * GLOBAL_STATE);
-//     int (*set_max_baud_fn)(void);
-//     void (*set_difficulty_mask_fn)(int);
-//     void (*send_work_fn)(void * GLOBAL_STATE, bm_job * next_bm_job);
-//     void (*set_version_mask)(uint32_t);
-// } AsicFunctions;
-
 typedef struct {
     char message[64];
     uint32_t count;
@@ -126,7 +116,10 @@ typedef struct
     SelfTestModule SELF_TEST_MODULE;
 
     char * extranonce_str;
+    uint8_t * extranonce_bin;        // [新增]: 纯二进制的 Extranonce1 缓存
+    size_t extranonce_bin_len;       // [新增]: 缓存长度
     int extranonce_2_len;
+    
     int abandon_work;
 
     uint8_t * valid_jobs;
@@ -139,8 +132,6 @@ typedef struct
 
     int sock;
 
-    // A message ID that must be unique per request that expects a response.
-    // For requests not expecting a response (called notifications), this is null.
     int send_uid;
 
     bool ASIC_initalized;
