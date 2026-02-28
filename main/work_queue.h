@@ -2,25 +2,23 @@
 #define WORK_QUEUE_H
 
 #include <pthread.h>
-#include "mining.h"
+#include "freertos/FreeRTOS.h"
 
-#define QUEUE_SIZE 6
+#define QUEUE_SIZE 128
 
-typedef struct
-{
-    void *buffer[QUEUE_SIZE];
+typedef struct {
+    void * buffer[QUEUE_SIZE];
     int head;
     int tail;
     int count;
     pthread_mutex_t lock;
-    pthread_cond_t not_empty;
-    pthread_cond_t not_full;
 } work_queue;
 
-void queue_init(work_queue *queue);
-void queue_enqueue(work_queue *queue, void *new_work);
-void ASIC_jobs_queue_clear(work_queue *queue);
-void *queue_dequeue(work_queue *queue);
-void queue_clear(work_queue *queue);
+void queue_init(work_queue *q);
+int queue_enqueue(work_queue *q, void * item);
+void * queue_dequeue(work_queue *q);
+void queue_clear(work_queue *q);
 
-#endif // WORK_QUEUE_H
+void ASIC_jobs_queue_clear(work_queue *q);
+
+#endif /* WORK_QUEUE_H */
