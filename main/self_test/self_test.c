@@ -415,9 +415,14 @@ void self_test(void * pvParameters)
 
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 
+    // [适配神级优化]: 结构体清零并直接调用新版二进制转换
     mining_notify notify_message;
-    notify_message.job_id = 0;
-    notify_message.prev_block_hash = "0c859545a3498373a57452fac22eb7113df2a465000543520000000000000000";
+    memset(&notify_message, 0, sizeof(mining_notify));
+    notify_message.job_id = NULL;
+    
+    // 解析旧的十六进制为全新的二进制数据格式
+    hex2bin("0c859545a3498373a57452fac22eb7113df2a465000543520000000000000000", notify_message.prev_block_hash_bin, 32);
+    
     notify_message.version = 0x20000004;
     notify_message.target = 0x1705ae3a;
     notify_message.ntime = 0x647025b5;
@@ -448,9 +453,20 @@ void self_test(void * pvParameters)
     hex2bin("c4f5ab01913fc186d550c1a28f3f3e9ffaca2016b961a6a751f8cca0089df924", merkles[11], 32);
     hex2bin("cff737e1d00176dd6bbfa73071adbb370f227cfb5fba186562e4060fcec877e1", merkles[12], 32);
 
-    char * merkle_root = calculate_merkle_root_hash(coinbase_tx, merkles, num_merkles);
+    // [适配神级优化]: 将测试用的 coinbase 转为临时二进制数组参与哈希
+    size_t coinbase_len = strlen(coinbase_tx) / 2;
+    uint8_t *coinbase_bin = malloc(coinbase_len);
+    hex2bin(coinbase_tx, coinbase_bin, coinbase_len);
 
-    bm_job job = construct_bm_job(&notify_message, merkle_root, 0x1fffe000, 1000000);
+    uint8_t merkle_root_bin[32];
+    calculate_merkle_root_hash_bin(coinbase_bin, coinbase_len, (const uint8_t(*)[32])merkles, num_merkles, merkle_root_bin);
+
+    // 调用新版无拷贝的 Job 构造器
+    bm_job job = construct_bm_job_bin(&notify_message, merkle_root_bin, 0x1fffe000, 1000000);
+    job.jobid = NULL;       // 保证指针规范，防止未预期的释放
+    job.extranonce2 = NULL; // 测试环境无需使用日志字符串，置空即可
+
+    free(coinbase_bin);
 
     uint8_t difficulty_mask = 8;
 

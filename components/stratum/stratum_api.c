@@ -74,13 +74,11 @@ char * STRATUM_V1_receive_jsonrpc_line(int sockfd)
     int nbytes;
     size_t buflen = 0;
 
-    // [终极修复]: 废弃非线程安全的 strtok，改用 strchr
     if (!strchr(json_rpc_buffer, '\n')) {
         do {
             memset(recv_buffer, 0, BUFFER_SIZE);
             nbytes = recv(sockfd, recv_buffer, BUFFER_SIZE - 1, 0);
             
-            // [修复致命缺陷]: 必须判断 <= 0
             if (nbytes <= 0) {
                 ESP_LOGW(TAG, "Socket closed or error: recv returned %d (errno %d: %s)", nbytes, errno, strerror(errno));
                 if (json_rpc_buffer) {
@@ -116,7 +114,6 @@ void STRATUM_V1_parse(StratumApiV1Message * message, const char * stratum_json)
 {
     cJSON * json = cJSON_Parse(stratum_json);
 
-    // [修复致命缺陷]: 增加 JSON 非空检查
     if (json == NULL) {
         ESP_LOGE(TAG, "Error parsing JSON payload: %s", stratum_json);
         message->method = STRATUM_UNKNOWN;
@@ -203,8 +200,15 @@ void STRATUM_V1_parse(StratumApiV1Message * message, const char * stratum_json)
                 message->response_success = false;
                 goto done;
             }
+            
             message->extranonce_str = malloc(strlen(extranonce_json->valuestring) + 1);
             strcpy(message->extranonce_str, extranonce_json->valuestring);
+            
+            // [极致优化 2: 全局缓存二进制化]
+            message->extranonce_bin_len = strlen(extranonce_json->valuestring) / 2;
+            message->extranonce_bin = malloc(message->extranonce_bin_len);
+            hex2bin(extranonce_json->valuestring, message->extranonce_bin, message->extranonce_bin_len);
+
             message->response_success = true;
 
             ESP_LOGI(TAG, "extranonce_str: %s", message->extranonce_str);
@@ -230,7 +234,6 @@ void STRATUM_V1_parse(StratumApiV1Message * message, const char * stratum_json)
     if (message->method == MINING_NOTIFY) {
         cJSON * params = cJSON_GetObjectItem(json, "params");
         
-        // [修复致命缺陷]: 增加参数数组合法性校验
         if (params == NULL || !cJSON_IsArray(params) || cJSON_GetArraySize(params) < 8) {
             ESP_LOGE(TAG, "Malformed mining.notify params received!");
             goto done;
@@ -240,9 +243,19 @@ void STRATUM_V1_parse(StratumApiV1Message * message, const char * stratum_json)
         if (!new_work) goto done; // OOM 保护
 
         new_work->job_id = strdup(cJSON_GetArrayItem(params, 0)->valuestring);
-        new_work->prev_block_hash = strdup(cJSON_GetArrayItem(params, 1)->valuestring);
-        new_work->coinbase_1 = strdup(cJSON_GetArrayItem(params, 2)->valuestring);
-        new_work->coinbase_2 = strdup(cJSON_GetArrayItem(params, 3)->valuestring);
+        
+        // [极致优化 1: 落地即二进制，消除 strdup]
+        hex2bin(cJSON_GetArrayItem(params, 1)->valuestring, new_work->prev_block_hash_bin, 32);
+        
+        const char *cb1_str = cJSON_GetArrayItem(params, 2)->valuestring;
+        new_work->coinbase_1_len = strlen(cb1_str) / 2;
+        new_work->coinbase_1_bin = malloc(new_work->coinbase_1_len);
+        hex2bin(cb1_str, new_work->coinbase_1_bin, new_work->coinbase_1_len);
+        
+        const char *cb2_str = cJSON_GetArrayItem(params, 3)->valuestring;
+        new_work->coinbase_2_len = strlen(cb2_str) / 2;
+        new_work->coinbase_2_bin = malloc(new_work->coinbase_2_len);
+        hex2bin(cb2_str, new_work->coinbase_2_bin, new_work->coinbase_2_len);
 
         cJSON * merkle_branch = cJSON_GetArrayItem(params, 4);
         new_work->n_merkle_branches = cJSON_GetArraySize(merkle_branch);
@@ -281,12 +294,12 @@ void STRATUM_V1_parse(StratumApiV1Message * message, const char * stratum_json)
     cJSON_Delete(json);
 }
 
+// 释放替换为了二进制的指针
 void STRATUM_V1_free_mining_notify(mining_notify * params)
 {
     free(params->job_id);
-    free(params->prev_block_hash);
-    free(params->coinbase_1);
-    free(params->coinbase_2);
+    free(params->coinbase_1_bin);
+    free(params->coinbase_2_bin);
     free(params->merkle_branches);
     free(params);
 }

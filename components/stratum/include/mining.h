@@ -27,16 +27,13 @@ typedef struct
 
 void free_bm_job(bm_job *job);
 
-char *construct_coinbase_tx(const char *coinbase_1, const char *coinbase_2,
-                            const char *extranonce, const char *extranonce_2);
+// [极速接口]: 纯二进制的 Merkle Root 计算
+void calculate_merkle_root_hash_bin(const uint8_t *coinbase_bin, size_t coinbase_len, const uint8_t merkle_branches[][32], const int num_merkle_branches, uint8_t *merkle_root_bin);
 
-char *calculate_merkle_root_hash(const char *coinbase_tx, const uint8_t merkle_branches[][32], const int num_merkle_branches);
-
-bm_job construct_bm_job(mining_notify *params, const char *merkle_root, const uint32_t version_mask, uint32_t difficulty);
+// [极速接口]: 纯二进制的 Job 组装
+bm_job construct_bm_job_bin(mining_notify *params, const uint8_t *merkle_root_bin, const uint32_t version_mask, uint32_t difficulty);
 
 double test_nonce_value(const bm_job *job, const uint32_t nonce, const uint32_t rolled_version);
-
-char *extranonce_2_generate(uint64_t extranonce_2, uint32_t length);
 
 uint32_t increment_bitmask(const uint32_t value, const uint32_t mask);
 

@@ -330,6 +330,11 @@ void stratum_task(void * pvParameters)
             } else if (stratum_api_v1_message.method == STRATUM_RESULT_SUBSCRIBE) {
                 GLOBAL_STATE->extranonce_str = stratum_api_v1_message.extranonce_str;
                 GLOBAL_STATE->extranonce_2_len = stratum_api_v1_message.extranonce_2_len;
+                
+                // 【修复核心点】：将二进制化的 extranonce 数据也写入全局状态，避免后续组装时引发 H-not-zero
+                GLOBAL_STATE->extranonce_bin = stratum_api_v1_message.extranonce_bin;
+                GLOBAL_STATE->extranonce_bin_len = stratum_api_v1_message.extranonce_bin_len;
+                
             } else if (stratum_api_v1_message.method == CLIENT_RECONNECT) {
                 ESP_LOGE(TAG, "Pool requested client reconnect...");
                 stratum_close_connection(GLOBAL_STATE);

@@ -28,10 +28,12 @@ static const int  STRATUM_ID_SUBSCRIBE    = 2;
 
 typedef struct
 {
-    char *job_id;
-    char *prev_block_hash;
-    char *coinbase_1;
-    char *coinbase_2;
+    char *job_id; // job_id 必须保留字符串，因为可能是字母组合
+    uint8_t prev_block_hash_bin[32]; // 原地解析为 32 字节二进制，0拷贝开销
+    uint8_t *coinbase_1_bin;         // 纯二进制指针
+    size_t coinbase_1_len;           // 记录二进制长度
+    uint8_t *coinbase_2_bin;         // 纯二进制指针
+    size_t coinbase_2_len;           // 记录二进制长度
     uint8_t *merkle_branches;
     size_t n_merkle_branches;
     uint32_t version;
@@ -42,6 +44,8 @@ typedef struct
 typedef struct
 {
     char * extranonce_str;
+    uint8_t * extranonce_bin;        // [新增]: 纯二进制的 Extranonce1 缓存
+    size_t extranonce_bin_len;       // [新增]: 缓存长度
     int extranonce_2_len;
 
     int64_t message_id;

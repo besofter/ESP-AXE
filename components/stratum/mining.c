@@ -13,58 +13,48 @@ void free_bm_job(bm_job *job)
     free(job);
 }
 
-// [优化]: 消除低效的 strcat，使用长度预先计算加指针偏移的 memcpy 极速组装
-char *construct_coinbase_tx(const char *coinbase_1, const char *coinbase_2,
-                            const char *extranonce, const char *extranonce_2)
-{
-    size_t len1 = strlen(coinbase_1);
-    size_t len2 = strlen(extranonce);
-    size_t len3 = strlen(extranonce_2);
-    size_t len4 = strlen(coinbase_2);
-
-    size_t coinbase_tx_len = len1 + len2 + len3 + len4 + 1;
-    char *coinbase_tx = malloc(coinbase_tx_len);
-    
-    char *ptr = coinbase_tx;
-    memcpy(ptr, coinbase_1, len1); ptr += len1;
-    memcpy(ptr, extranonce, len2); ptr += len2;
-    memcpy(ptr, extranonce_2, len3); ptr += len3;
-    memcpy(ptr, coinbase_2, len4); ptr += len4;
-    *ptr = '\0';
-
-    return coinbase_tx;
+// [神级优化 1]: 数学抵消，用 8 次寄存器赋值完美等效替代原来的 swap_endian_words + reverse_bytes
+static inline void fast_word_reverse_32(const uint8_t *src, uint8_t *dest) {
+    const uint32_t *s = (const uint32_t *)src;
+    uint32_t *d = (uint32_t *)dest;
+    d[0] = s[7]; d[1] = s[6]; d[2] = s[5]; d[3] = s[4];
+    d[4] = s[3]; d[5] = s[2]; d[6] = s[1]; d[7] = s[0];
 }
 
-// [优化]: 彻底消除 for 循环内的 malloc/free，极大地降低碎片化和执行时间
-char *calculate_merkle_root_hash(const char *coinbase_tx, const uint8_t merkle_branches[][32], const int num_merkle_branches)
-{
-    size_t coinbase_tx_bin_len = strlen(coinbase_tx) / 2;
-    uint8_t *coinbase_tx_bin = malloc(coinbase_tx_bin_len);
-    hex2bin(coinbase_tx, coinbase_tx_bin, coinbase_tx_bin_len);
+// [神级优化 2]: 使用 GCC 内置硬件指令进行瞬间字内反转
+static inline void swap_words_32bytes(const uint8_t *src, uint8_t *dest) {
+    const uint32_t *s = (const uint32_t *)src;
+    uint32_t *d = (uint32_t *)dest;
+    for (int i = 0; i < 8; i++) d[i] = __builtin_bswap32(s[i]);
+}
 
+// 常规的数组前后倒序（用于部分必须按原样倒序的环节）
+static inline void reverse_bytes_32(const uint8_t *src, uint8_t *dest) {
+    for(int i=0; i<32; i++) dest[i] = src[31 - i];
+}
+
+// [神级优化 3]: In-Place 原地更新哈希，彻底消灭中间缓冲和拷贝
+void calculate_merkle_root_hash_bin(const uint8_t *coinbase_bin, size_t coinbase_len, const uint8_t merkle_branches[][32], const int num_merkle_branches, uint8_t *merkle_root_bin)
+{
     uint8_t both_merkles[64];
     
-    // 直接将第一次双重哈希结果写入 both_merkles 数组的前 32 字节
-    double_sha256_bin(coinbase_tx_bin, coinbase_tx_bin_len, both_merkles);
-    free(coinbase_tx_bin);
-
-    uint8_t temp_root[32]; // 分配在栈上的临时存储区
+    // 第一重哈希：直接写入 both_merkles 前 32 字节
+    double_sha256_bin(coinbase_bin, coinbase_len, both_merkles);
 
     for (int i = 0; i < num_merkle_branches; i++)
     {
+        // 拼接分支到后 32 字节
         memcpy(both_merkles + 32, merkle_branches[i], 32);
-        // 调用优化后的无内存分配版哈希函数
-        double_sha256_bin(both_merkles, 64, temp_root);
-        memcpy(both_merkles, temp_root, 32);
+        // [极速突破]：直接覆盖自身！把输入源当输出源
+        double_sha256_bin(both_merkles, 64, both_merkles);
     }
 
-    char *merkle_root_hash = malloc(65);
-    bin2hex(both_merkles, 32, merkle_root_hash, 65);
-    return merkle_root_hash;
+    // 将最终结果推到输出指针
+    memcpy(merkle_root_bin, both_merkles, 32);
 }
 
-// take a mining_notify struct with ascii hex strings and convert it to a bm_job struct
-bm_job construct_bm_job(mining_notify *params, const char *merkle_root, const uint32_t version_mask, const uint32_t difficulty)
+// 剔除字符串，纯二进制组装 Job，无缝对接原有逻辑
+bm_job construct_bm_job_bin(mining_notify *params, const uint8_t *merkle_root_bin, const uint32_t version_mask, const uint32_t difficulty)
 {
     bm_job new_job;
 
@@ -73,30 +63,28 @@ bm_job construct_bm_job(mining_notify *params, const char *merkle_root, const ui
     new_job.ntime = params->ntime;
     new_job.starting_nonce = 0;
     new_job.pool_diff = difficulty;
-    hex2bin(merkle_root, new_job.merkle_root, 32);
 
-    // hex2bin(merkle_root, new_job.merkle_root_be, 32);
-    swap_endian_words(merkle_root, new_job.merkle_root_be);
-    reverse_bytes(new_job.merkle_root_be, 32);
+    // 1. 处理 Merkle Root
+    memcpy(new_job.merkle_root, merkle_root_bin, 32);
+    // 瞬间完成端序重排
+    fast_word_reverse_32(new_job.merkle_root, new_job.merkle_root_be);
 
-    swap_endian_words(params->prev_block_hash, new_job.prev_block_hash);
+    // 2. 处理 Prev Block Hash 
+    // [完美契合]: 这里直接使用我们在 stratum_api.c 中已经解析好的纯二进制 prev_block_hash_bin
+    swap_words_32bytes(params->prev_block_hash_bin, new_job.prev_block_hash);
+    reverse_bytes_32(params->prev_block_hash_bin, new_job.prev_block_hash_be);
 
-    hex2bin(params->prev_block_hash, new_job.prev_block_hash_be, 32);
-    reverse_bytes(new_job.prev_block_hash_be, 32);
-
-    ////make the midstate hash
+    // ============================================
+    // Midstate Hash
     uint8_t midstate_data[64];
+    memcpy(midstate_data, &new_job.version, 4);
+    memcpy(midstate_data + 4, new_job.prev_block_hash, 32); 
+    memcpy(midstate_data + 36, new_job.merkle_root, 28); 
+    
+    midstate_sha256_bin(midstate_data, 64, new_job.midstate);
+    reverse_bytes(new_job.midstate, 32);
 
-    // copy 68 bytes header data into midstate (and deal with endianess)
-    memcpy(midstate_data, &new_job.version, 4);             // copy version
-    memcpy(midstate_data + 4, new_job.prev_block_hash, 32); // copy prev_block_hash
-    memcpy(midstate_data + 36, new_job.merkle_root, 28);    // copy merkle_root
-
-    midstate_sha256_bin(midstate_data, 64, new_job.midstate); // make the midstate hash
-    reverse_bytes(new_job.midstate, 32);                      // reverse the midstate bytes for the BM job packet
-
-    if (version_mask != 0)
-    {
+    if (version_mask != 0) {
         uint32_t rolled_version = increment_bitmask(new_job.version, version_mask);
         memcpy(midstate_data, &rolled_version, 4);
         midstate_sha256_bin(midstate_data, 64, new_job.midstate1);
@@ -112,46 +100,20 @@ bm_job construct_bm_job(mining_notify *params, const char *merkle_root, const ui
         midstate_sha256_bin(midstate_data, 64, new_job.midstate3);
         reverse_bytes(new_job.midstate3, 32);
         new_job.num_midstates = 4;
-    }
-    else
-    {
+    } else {
         new_job.num_midstates = 1;
     }
 
     return new_job;
 }
 
-char *extranonce_2_generate(uint64_t extranonce_2, uint32_t length)
-{
-    char *extranonce_2_str = malloc(length * 2 + 1);
-    memset(extranonce_2_str, '0', length * 2);
-    extranonce_2_str[length * 2] = '\0';
-    bin2hex((uint8_t *)&extranonce_2, length, extranonce_2_str, length * 2 + 1);
-    if (length > 8)
-    {
-        extranonce_2_str[8] = '0';
-    }
-    return extranonce_2_str;
-}
-
-///////cgminer nonce testing
-/* truediffone == 0x00000000FFFF0000000000000000000000000000000000000000000000000000
- */
 static const double truediffone = 26959535291011309493156476344723991336010898738574164086137773096960.0;
 
-/* testing a nonce and return the diff - 0 means invalid */
 double test_nonce_value(const bm_job *job, const uint32_t nonce, const uint32_t rolled_version)
 {
     double d64, s64, ds;
     unsigned char header[80];
 
-    // // TODO: use the midstate hash instead of hashing the whole header
-    // uint32_t rolled_version = job->version;
-    // for (int i = 0; i < midstate_index; i++) {
-    //     rolled_version = increment_bitmask(rolled_version, job->version_mask);
-    // }
-
-    // copy data from job to header
     memcpy(header, &rolled_version, 4);
     memcpy(header + 4, job->prev_block_hash, 32);
     memcpy(header + 36, job->merkle_root, 32);
@@ -162,7 +124,6 @@ double test_nonce_value(const bm_job *job, const uint32_t nonce, const uint32_t 
     unsigned char hash_buffer[32];
     unsigned char hash_result[32];
 
-    // double hash the header
     mbedtls_sha256(header, 80, hash_buffer, 0);
     mbedtls_sha256(hash_buffer, 32, hash_result, 0);
 
@@ -175,20 +136,15 @@ double test_nonce_value(const bm_job *job, const uint32_t nonce, const uint32_t 
 
 uint32_t increment_bitmask(const uint32_t value, const uint32_t mask)
 {
-    // if mask is zero, just return the original value
-    if (mask == 0)
-        return value;
+    if (mask == 0) return value;
+    uint32_t carry = (value & mask) + (mask & -mask);      
+    uint32_t overflow = carry & ~mask;                     
+    uint32_t new_value = (value & ~mask) | (carry & mask); 
 
-    uint32_t carry = (value & mask) + (mask & -mask);      // increment the least significant bit of the mask
-    uint32_t overflow = carry & ~mask;                     // find overflowed bits that are not in the mask
-    uint32_t new_value = (value & ~mask) | (carry & mask); // set bits according to the mask
-
-    // Handle carry propagation
     if (overflow > 0)
     {
-        uint32_t carry_mask = (overflow << 1);                // shift left to get the mask where carry should be propagated
-        new_value = increment_bitmask(new_value, carry_mask); // recursively handle carry propagation
+        uint32_t carry_mask = (overflow << 1);                
+        new_value = increment_bitmask(new_value, carry_mask); 
     }
-
     return new_value;
 }
